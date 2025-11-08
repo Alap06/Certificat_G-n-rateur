@@ -1,5 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Download, Plus, Trash2, FileText, Image as ImageIcon, Award, Upload, FileDown, Users, CheckCircle } from 'lucide-react';
+import { Download, Plus, Trash2, FileText, Image as ImageIcon, Award, Upload, FileDown, Users, CheckCircle, Mail } from 'lucide-react';
+import emailjs from '@emailjs/browser';
+import axios from 'axios';
 import Sig1 from '../assets/signature1.png'
 import Sig2 from '../assets/signature2.png'
 import Logo_isima from '../assets/logo_isima.png'
@@ -10,9 +12,11 @@ const CertificateGenerator = () => {
   const [participants, setParticipants] = useState([]);
   const [newName, setNewName] = useState('');
   const [newFirstName, setNewFirstName] = useState('');
+  const [newEmail, setNewEmail] = useState('');
   const [selectedParticipant, setSelectedParticipant] = useState(null);
   const [toast, setToast] = useState({ show: false, message: '', type: 'info' });
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isSendingEmail, setIsSendingEmail] = useState(false);
   const [logosBase64, setLogosBase64] = useState({
     logo_nt: '',
     logo_tpl: '',
@@ -93,10 +97,12 @@ const CertificateGenerator = () => {
       setParticipants([...participants, { 
         id: Date.now(), 
         nom: newName.trim(), 
-        prenom: newFirstName.trim() 
+        prenom: newFirstName.trim(),
+        email: newEmail.trim() 
       }]);
       setNewName('');
       setNewFirstName('');
+      setNewEmail('');
       showToast('✅ Participant ajouté avec succès', 'success');
     }
   };
@@ -125,12 +131,13 @@ const CertificateGenerator = () => {
             return;
           }
           
-          const [prenom, nom] = line.split(/[,;\t]/).map(s => s.trim());
+          const [prenom, nom, email] = line.split(/[,;\t]/).map(s => s.trim());
           if (prenom && nom) {
             newParticipants.push({
               id: Date.now() + index,
               prenom,
-              nom
+              nom,
+              email: email || ''
             });
           }
         });
@@ -151,7 +158,7 @@ const CertificateGenerator = () => {
   };
 
   const exportTemplateCSV = () => {
-    const csvContent = 'Prenom,Nom\nMohamed,Ben Ali\nFatma,Trabelsi\nAhmed,Gharbi';
+    const csvContent = 'Prenom,Nom,Email\nMohamed,Ben Ali,mohamed@example.com\nFatma,Trabelsi,fatma@example.com\nAhmed,Gharbi,ahmed@example.com';
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -213,6 +220,100 @@ const CertificateGenerator = () => {
     }
   };
 
+  const sendCertificateByEmail = async () => {
+    if (!selectedParticipant) {
+      showToast('⚠️ Veuillez sélectionner un participant', 'error');
+      return;
+    }
+
+    if (!selectedParticipant.email) {
+      showToast('⚠️ Ce participant n\'a pas d\'email', 'error');
+      return;
+    }
+
+    setIsSendingEmail(true);
+    try {
+      // Générer le certificat en haute qualité
+      const svgElement = certificateRef.current;
+      const svgData = new XMLSerializer().serializeToString(svgElement);
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      const img = new Image();
+
+      canvas.width = 1122;
+      canvas.height = 793;
+
+      img.onload = async () => {
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0);
+
+        // Convertir en blob haute qualité
+        canvas.toBlob(async (blob) => {
+          try {
+            // Uploader sur ImgBB (service gratuit de stockage d'images)
+            const formData = new FormData();
+            formData.append('image', blob);
+            
+            // Clé API ImgBB gratuite (limitée mais suffit pour les tests)
+            // Vous pouvez obtenir votre propre clé sur https://api.imgbb.com/
+            const imgbbApiKey = '968530f772fc3577a2e91e0c4e7237dc'; // Remplacez par votre clé
+            
+            showToast('⏳ Upload du certificat en cours...', 'info');
+            
+            const uploadResponse = await axios.post(
+              `https://api.imgbb.com/1/upload?key=${imgbbApiKey}`,
+              formData
+            );
+
+            if (uploadResponse.data && uploadResponse.data.data) {
+              const certificateUrl = uploadResponse.data.data.url;
+              const downloadUrl = uploadResponse.data.data.display_url;
+              
+              console.log('✅ Certificat uploadé:', certificateUrl);
+
+              // Configuration EmailJS
+              const serviceId = 'service_0yq3xqe';
+              const templateId = 'template_hcq4j99';
+              const publicKey = 'kuORzkFnw0CSXu891';
+
+              // Envoyer l'email avec le lien de téléchargement
+              const templateParams = {
+                to_email: selectedParticipant.email,
+                to_name: `${selectedParticipant.prenom} ${selectedParticipant.nom}`,
+                participant_name: `${selectedParticipant.prenom} ${selectedParticipant.nom}`,
+                certificate_url: certificateUrl,
+                download_link: downloadUrl,
+                message: `Félicitations ${selectedParticipant.prenom} !\n\nVous avez participé avec succès au workshop LaTeX organisé par TPL × ISIMA.\n\nVotre certificat haute qualité est disponible en ligne. Cliquez sur le lien ci-dessous pour le télécharger :\n\n${downloadUrl}\n\nLe certificat restera accessible pendant 6 mois.\n\nCordialement,\nL'équipe TPL × ISIMA`
+              };
+
+              await emailjs.send(serviceId, templateId, templateParams, publicKey);
+              showToast('✅ Certificat uploadé et email envoyé avec succès !', 'success');
+            } else {
+              throw new Error('Erreur lors de l\'upload');
+            }
+          } catch (uploadError) {
+            console.error('Erreur upload:', uploadError);
+            showToast('❌ Erreur lors de l\'upload du certificat. Veuillez réessayer.', 'error');
+          }
+          
+          setIsSendingEmail(false);
+        }, 'image/png', 1.0); // Qualité maximale PNG
+      };
+
+      img.onerror = () => {
+        showToast('❌ Erreur lors de la génération du certificat', 'error');
+        setIsSendingEmail(false);
+      };
+
+      img.src = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svgData)));
+    } catch (error) {
+      console.error('Erreur:', error);
+      showToast('❌ Erreur lors de l\'envoi', 'error');
+      setIsSendingEmail(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-teal-50 to-green-50">
       {/* Toast */}
@@ -268,6 +369,14 @@ const CertificateGenerator = () => {
                   onKeyPress={(e) => e.key === 'Enter' && addParticipant()}
                   className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none"
                   placeholder="Nom"
+                />
+                <input
+                  type="email"
+                  value={newEmail}
+                  onChange={(e) => setNewEmail(e.target.value)}
+                  onKeyPress={(e) => e.key === 'Enter' && addParticipant()}
+                  className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none"
+                  placeholder="Email (optionnel)"
                 />
                 <button
                   onClick={addParticipant}
@@ -558,6 +667,20 @@ const CertificateGenerator = () => {
                       {isGenerating ? 'Génération...' : 'JPG'}
                     </button>
                   </div>
+
+                  {/* Email Button */}
+                  {selectedParticipant?.email && (
+                    <div className="mt-4">
+                      <button
+                        onClick={sendCertificateByEmail}
+                        disabled={isSendingEmail || isGenerating}
+                        className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-purple-600 to-pink-600 text-white py-4 rounded-xl font-semibold hover:from-purple-700 hover:to-pink-700 disabled:from-gray-400 disabled:to-gray-500 shadow-lg hover:shadow-xl transition-all"
+                      >
+                        <Mail className="w-5 h-5" />
+                        {isSendingEmail ? 'Envoi en cours...' : `Envoyer par Email à ${selectedParticipant.email}`}
+                      </button>
+                    </div>
+                  )}
                 </>
               )}
             </div>
